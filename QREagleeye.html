@@ -1,0 +1,311 @@
+<!-- Save as: kurir-qr-final.html -->
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Kurir — QR Auto Scan to Google Sheets (FINAL)</title>
+<!-- pinned stable jsQR -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root{--bg:#0f1724;--card:#fff;--accent:#06b6d4;--ok:#16a34a;--warn:#f59e0b;--err:#ef4444;}
+  html,body{height:100%;margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:#f1f5f9;color:#0f1724}
+  .wrap{max-width:1100px;margin:18px auto;padding:16px;}
+  header{text-align:center}
+  h1{margin:6px 0;font-size:22px}
+  .layout{display:grid;grid-template-columns:420px 1fr;gap:14px}
+  .card{background:var(--card);border-radius:10px;padding:12px;box-shadow:0 6px 22px rgba(2,6,23,0.06)}
+  video#preview{width:100%;height:280px;background:#000;border-radius:8px;object-fit:cover}
+  .controls{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+  .btn{padding:8px 12px;border-radius:8px;border:0;cursor:pointer;font-weight:700}
+  .primary{background:var(--accent);color:#fff}
+  .ghost{background:transparent;border:1px solid #e6eef6}
+  .status-big{height:90px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .status-ok{background:linear-gradient(90deg,#ecfeff,#bbf7d0);color:#064e3b}
+  .status-dup{background:linear-gradient(90deg,#fff7ed,#fff3bf);color:#92400e}
+  .status-err{background:linear-gradient(90deg,#fff1f2,#ffd6d6);color:#7f1d1d}
+  .log{max-height:420px;overflow:auto;margin-top:12px;padding:8px;border-radius:8px;background:#fff}
+  .log-item{padding:8px;border-bottom:1px solid #eef2f7;font-size:13px}
+  .small{font-size:13px;color:#475569}
+  footer{text-align:center;margin-top:14px;color:#475569;font-size:13px}
+  .muted{color:#6b7280;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Kurir — QR Auto Scan → Google Sheets (FINAL)</h1>
+    <div class="small">Auto-scan • Offline queue • Anti-duplicate • Ultra-speed option</div>
+    <div class="small" style="margin-top:6px">Screenshot reference: <code>/mnt/data/Screenshot (464).png</code></div>
+  </header>
+
+  <div class="layout">
+    <div class="card">
+      <video id="preview" autoplay playsinline></video>
+
+      <div class="controls">
+        <button id="btnStart" class="btn primary">Start</button>
+        <button id="btnStop" class="btn ghost">Stop</button>
+        <button id="btnManual" class="btn">Manual</button>
+        <label style="display:flex;align-items:center;gap:6px" class="muted"><input id="chkUltra" type="checkbox"> Ultra</label>
+        <button id="btnQueue" class="btn">Queue</button>
+      </div>
+
+      <div id="statusBig" class="status-big status-err" style="margin-top:10px">Initializing...</div>
+
+      <div style="margin-top:10px" class="small">
+        Script URL: <span id="scriptUrlShow" style="font-weight:700;word-break:break-all"></span><br>
+        Debounce: <span id="debounceVal">1500</span> ms • Local queue key: <code>SO_Q_QUEUE_FINAL</code>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div><strong>Last Scan</strong><div id="lastScanText" class="small">—</div></div>
+          <div><strong>Status</strong></div>
+        </div>
+
+        <div id="statusMini" class="status-big status-ok" style="margin-top:10px">Ready</div>
+
+        <div class="log" id="logBox" aria-live="polite" style="margin-top:12px">
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <strong>Actions</strong>
+        <div class="small" style="margin-top:8px">Beep & vibrate on OK</div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button id="btnExport" class="btn">Export Queue</button>
+          <button id="btnClear" class="btn">Clear Queue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>Run via Live Server / HTTPS. If using local file:// → it won't POST to Google (CORS/Origin null).</footer>
+</div>
+
+<script>
+/* ====== CONFIG ====== */
+/* SCRIPT_URL — set to your Apps Script Web App (you already gave this) */
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx93FgQkFv-GDTkJVsh0Bpe1KUrbRX28y29rNEqY-7IsJyYUZz0Sg4DD_NWqzMwaipE/exec";
+document.getElementById('scriptUrlShow').innerText = SCRIPT_URL;
+
+const QUEUE_KEY = 'SO_Q_QUEUE_FINAL';
+let DEBOUNCE = Number(localStorage.getItem('DEBOUNCE')) || 1500;
+document.getElementById('debounceVal').innerText = DEBOUNCE;
+
+/* ===== UI refs ===== */
+const preview = document.getElementById('preview');
+const statusBig = document.getElementById('statusBig');
+const statusMini = document.getElementById('statusMini');
+const logBox = document.getElementById('logBox');
+const lastScanText = document.getElementById('lastScanText');
+const chkUltra = document.getElementById('chkUltra');
+
+function pushLog(txt){
+  const d = new Date().toLocaleString();
+  const el = document.createElement('div');
+  el.className = 'log-item';
+  el.innerText = d + ' — ' + txt;
+  logBox.prepend(el);
+}
+
+/* ===== Queue helpers ===== */
+function readQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY))||[] }catch(e){return []} }
+function writeQueue(q){ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)) }
+function enqueue(item){ const q = readQueue(); q.push(item); writeQueue(q); pushLog('Queued: '+item.qr); }
+function dequeue(){ const q = readQueue(); const it = q.shift(); writeQueue(q); return it; }
+
+/* ===== Camera + scan ===== */
+let stream = null;
+let canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+let scanningLock = false;
+let lastTime = 0;
+
+async function startCamera(){
+  if(stream){ pushLog('Camera already running'); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    statusBig.className='status-big status-err'; statusBig.innerText='Browser tidak mendukung kamera';
+    pushLog('No camera support');
+    return;
+  }
+  try{
+    statusBig.className='status-big status-err'; statusBig.innerText='Minta izin kamera...';
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    preview.srcObject = stream;
+    await preview.play();
+    statusBig.className='status-big status-ok'; statusBig.innerText='Siap scan';
+    pushLog('Camera started');
+    requestAnimationFrame(tick);
+  }catch(e){
+    console.error(e);
+    statusBig.className='status-big status-err'; statusBig.innerText='Gagal buka kamera';
+    pushLog('Camera error: '+(e.message||e));
+    stream = null;
+  }
+}
+
+function stopCamera(){
+  if(stream){
+    stream.getTracks().forEach(t=>t.stop());
+    stream = null;
+    pushLog('Camera stopped');
+  }
+  statusBig.className='status-big status-err'; statusBig.innerText='Kamera berhenti';
+}
+
+function tick(){
+  if(!stream) return;
+  try{
+    if(preview.readyState >= 2){
+      const w = preview.videoWidth || 640;
+      const h = preview.videoHeight || 480;
+      if(w && h){
+        canvas.width = w; canvas.height = h;
+        ctx.drawImage(preview,0,0,w,h);
+        const img = ctx.getImageData(0,0,w,h);
+        const code = jsQR(img.data, w, h, { inversionAttempts: 'attemptBoth' });
+        if(code && !scanningLock){
+          const now = Date.now();
+          const ultra = chkUltra.checked;
+          const debounce = ultra ? 120 : DEBOUNCE;
+          if(now - lastTime >= debounce){
+            lastTime = now;
+            scanningLock = true;
+            handleDecoded(code.data).finally(()=>{ scanningLock = false; });
+          }
+        }
+      }
+    }
+  }catch(e){ console.warn('tick err',e) }
+  requestAnimationFrame(tick);
+}
+
+/* ===== beep & vibrate ===== */
+function beepOk(){
+  try{
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type='sine'; o.frequency.value=880; g.gain.value=0.04;
+    o.connect(g); g.connect(actx.destination); o.start();
+    setTimeout(()=>{ o.stop(); actx.close(); }, 130);
+  }catch(e){ console.warn('beep fail',e) }
+}
+function vibrate(){ if(navigator.vibrate) navigator.vibrate(80); }
+
+/* ===== handle decoded payload ===== */
+async function handleDecoded(text){
+  lastScanText.innerText = text;
+  pushLog('Scanned: '+text);
+
+  let payload;
+  try{ const parsed = JSON.parse(text); payload = { qr: JSON.stringify(parsed) }; }
+  catch(e){ payload = { qr: String(text) }; }
+
+  // Try send immediately
+  try{
+    const res = await postJSONWithTimeout(SCRIPT_URL, payload, 9000);
+    processServerResponse(res, payload);
+  }catch(err){
+    // queue locally on network error
+    enqueue({ qr: payload.qr, ts: new Date().toISOString() });
+    statusBig.className='status-big status-err';
+    statusBig.innerText='Offline — queued';
+    pushLog('Network error -> queued (' + (err.message||err) + ')');
+  }
+}
+
+/* ===== fetch helper with timeout ===== */
+async function postJSONWithTimeout(url, body, timeoutMs=8000){
+  const controller = new AbortController();
+  const t = setTimeout(()=>controller.abort(), timeoutMs);
+  try{
+    const r = await fetch(url, {
+      method:'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    clearTimeout(t);
+    return await r.text();
+  }catch(e){ clearTimeout(t); throw e; }
+}
+
+/* ===== handle server reply ===== */
+function processServerResponse(text, payload){
+  if(!text) text = 'ERR: empty';
+  const upper = String(text).toUpperCase();
+  if(upper.indexOf('OK')===0){
+    statusBig.className='status-big status-ok'; statusBig.innerText='✔ OK';
+    statusMini.className='status-big status-ok'; statusMini.innerText='OK';
+    pushLog('Saved remote: '+payload.qr);
+    beepOk(); vibrate();
+  } else if(upper.indexOf('DUPLIKAT')===0 || upper.indexOf('DUPLICATE')===0){
+    statusBig.className='status-big status-dup'; statusBig.innerText='⚠ DUPLIKAT';
+    statusMini.className='status-big status-dup'; statusMini.innerText='DUPLIKAT';
+    pushLog('Duplicate (server): '+payload.qr);
+  } else {
+    statusBig.className='status-big status-err'; statusBig.innerText='❌ ERROR';
+    pushLog('Server error: '+text);
+  }
+}
+
+/* ===== flush queue ===== */
+let flushing = false;
+async function flushQueue(){
+  if(flushing) return;
+  const q = readQueue();
+  if(q.length===0) return;
+  flushing = true;
+  pushLog('Flushing queue ('+q.length+')...');
+  for(let i=0;i<q.length;i++){
+    try{
+      const item = q[0]; // always first
+      const res = await postJSONWithTimeout(SCRIPT_URL, { qr: item.qr }, 9000);
+      pushLog('Flushed: '+item.qr+' -> '+(res||'NO_RESP'));
+      const up = String(res||'').toUpperCase();
+      if(up.indexOf('OK')===0 || up.indexOf('DUPLIKAT')===0 || up.indexOf('DUPLICATE')===0){
+        dequeue();
+      } else {
+        // server error, stop to avoid infinite loop
+        break;
+      }
+    }catch(e){
+      pushLog('Flush error: '+(e.message||e));
+      break;
+    }
+  }
+  flushing = false;
+}
+
+/* ===== UI Buttons ===== */
+document.getElementById('btnStart').addEventListener('click', ()=>startCamera());
+document.getElementById('btnStop').addEventListener('click', ()=>stopCamera());
+document.getElementById('btnQueue').addEventListener('click', ()=>{ alert('Queued items: '+readQueue().length); });
+document.getElementById('btnManual').addEventListener('click', async ()=>{
+  const q = prompt('Masukkan payload QR (JSON atau pipe |):');
+  if(!q) return;
+  await handleDecoded(q);
+});
+document.getElementById('btnExport').addEventListener('click', ()=>{
+  const blob = new Blob([JSON.stringify(readQueue(),null,2)], { type:'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'queue.json'; a.click();
+});
+document.getElementById('btnClear').addEventListener('click', ()=>{
+  if(confirm('Clear local queue?')){ writeQueue([]); pushLog('Queue cleared'); }
+});
+
+/* ===== auto start & network listeners ===== */
+window.addEventListener('load', ()=>{ 
+  // auto-start camera if allowed
+  startCamera();
+  setInterval(()=>{ if(navigator.onLine) flushQueue(); }, 3000);
+});
+window.addEventListener('online', ()=>{ pushLog('Back online'); flushQueue(); });
+window.addEventListener('offline', ()=>{ pushLog('Offline'); });
+
+</script>
+</body>
+</html>
